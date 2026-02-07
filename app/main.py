@@ -8,6 +8,8 @@ from rag.ingest import ingest_markdown
 from rag.retrieve import retrieve
 from rag.prompt import build_prompt
 from rag.chat import generate_answer
+from rag.bedrock_status import bedrock_status
+
 
 load_dotenv()
 
@@ -23,6 +25,11 @@ class IngestRequest(BaseModel):
 class AskRequest(BaseModel):
     question: str
     top_k: int | None = None
+
+
+@app.get("/bedrock/status")
+def bedrock_status_endpoint():
+    return bedrock_status()
 
 
 @app.on_event("startup")
