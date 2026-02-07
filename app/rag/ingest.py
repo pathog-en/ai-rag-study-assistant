@@ -13,7 +13,17 @@ class Chunk:
     content: str
 
 
+def _to_pgvector_literal(vec: List[float]) -> str:
+    """
+    Convert a Python list of floats into a pgvector text literal.
+    pgvector accepts: '[0.1,0.2,0.3]'
+    """
+    # Keep a reasonable precision; pgvector doesn't need full repr precision.
+    return "[" + ",".join(f"{x:.8f}" for x in vec) + "]"
+
+
 def chunk_text(text: str, chunk_size: int, overlap: int) -> List[Chunk]:
+    # Simple character-based chunking (MVP). We'll upgrade to markdown-aware later.
     text = text.strip()
     if not text:
         return []
@@ -28,7 +38,10 @@ def chunk_text(text: str, chunk_size: int, overlap: int) -> List[Chunk]:
         if chunk:
             chunks.append(Chunk(chunk_index=idx, content=chunk))
             idx += 1
-        start = end - overlap if end - overlap > start else end
+
+        # Move forward with overlap
+        next_start = end - overlap
+        start = next_start if next_start > start else end
 
     return chunks
 
@@ -46,21 +59,26 @@ def ingest_markdown(title: str, source: str, markdown: str) -> Tuple[str, int]:
     embeddings = embed_texts([c.content for c in chunks])
 
     with db_conn() as conn, conn.cursor() as cur:
+        # Insert doc record
         cur.execute(
             "INSERT INTO documents (id, title, source) VALUES (%s, %s, %s)",
             (doc_id, title, source),
         )
 
+        # Insert chunks + embeddings
         for c, emb in zip(chunks, embeddings):
             chunk_id = str(uuid.uuid4())
+            emb_lit = _to_pgvector_literal(emb)
+
             cur.execute(
                 """
                 INSERT INTO chunks (id, doc_id, chunk_index, content, token_count, embedding)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s::vector)
                 """,
-                (chunk_id, doc_id, c.chunk_index, c.content, None, emb),
+                (chunk_id, doc_id, c.chunk_index, c.content, None, emb_lit),
             )
 
         conn.commit()
 
     return doc_id, len(chunks)
+

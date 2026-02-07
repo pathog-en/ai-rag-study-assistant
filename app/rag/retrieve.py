@@ -5,13 +5,15 @@ from .db import db_conn
 from .embeddings import embed_texts
 
 
+def _to_pgvector_literal(vec: list[float]) -> str:
+    # pgvector accepts text like: '[0.1,0.2,0.3]'
+    return "[" + ",".join(f"{x:.8f}" for x in vec) + "]"
+
+
 def retrieve(query: str, top_k: int | None = None) -> List[Dict[str, Any]]:
-    """
-    Embed the query, perform vector similarity search,
-    and return the top-k matching chunks.
-    """
     k = top_k or int(os.getenv("TOP_K", "5"))
     query_embedding = embed_texts([query])[0]
+    qv = _to_pgvector_literal(query_embedding)
 
     with db_conn() as conn, conn.cursor() as cur:
         cur.execute(
@@ -22,13 +24,13 @@ def retrieve(query: str, top_k: int | None = None) -> List[Dict[str, Any]]:
               d.source AS doc_source,
               c.chunk_index,
               c.content,
-              1 - (c.embedding <=> %s) AS score
+              1 - (c.embedding <=> %s::vector) AS score
             FROM chunks c
             JOIN documents d ON d.id = c.doc_id
-            ORDER BY c.embedding <=> %s
+            ORDER BY c.embedding <=> %s::vector
             LIMIT %s;
             """,
-            (query_embedding, query_embedding, k),
+            (qv, qv, k),
         )
         rows = cur.fetchall()
 
