@@ -13,3 +13,9 @@
 ## Bedrock
 - Amazon Bedrock provides access to foundation models via API.
 - Common patterns: summarization, Q&A, chat assistants, RAG.
+
+## Test Item
+- 1111
+- 2222
+- 3333
+
