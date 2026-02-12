@@ -1,4 +1,4 @@
-﻿import os
+import os
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
 from dotenv import load_dotenv
@@ -42,6 +42,13 @@ def health():
     return {"status": "ok"}
 
 
+@app.get("/debug/retrieve")
+def debug_retrieve(q: str = "RAG vs fine-tuning"):
+    hits = retrieve(q, top_k=10)
+    return {"q": q, "hits_count": len(hits), "hits_preview": hits[:2]}
+
+
+
 @app.post("/ingest")
 def ingest(req: IngestRequest):
     if not req.markdown.strip():
@@ -58,6 +65,18 @@ def ask(req: AskRequest):
         raise HTTPException(status_code=400, detail="question is empty")
 
     hits = retrieve(q, top_k=req.top_k)
+
+    # Guardrail: if retrieval returns nothing, do not generate
+    if not hits:
+        return {
+            "answer": "Not found in knowledge base.",
+            "grounded": False,
+            "top_score": None,
+            "sources": [],
+        }
+
+    top_score = float(hits[0].get("score", 0.0))
+
     prompt = build_prompt(q, hits)
     answer = generate_answer(prompt)
 
@@ -71,5 +90,13 @@ def ask(req: AskRequest):
         }
         for h in hits
     ]
+
+    return {
+        "answer": answer,
+        "grounded": True,
+        "top_score": top_score,
+        "sources": sources,
+    }
+
 
     return {"answer": answer, "sources": sources}

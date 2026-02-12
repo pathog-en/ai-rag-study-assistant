@@ -34,4 +34,4 @@ def retrieve(query: str, top_k: int | None = None) -> List[Dict[str, Any]]:
         )
         rows = cur.fetchall()
 
-    return rows
+    return [dict(r) for r in rows]
