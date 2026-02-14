@@ -9,3 +9,4 @@ boto3==1.34.162
 
 tenacity==9.0.0
 
+pgvector

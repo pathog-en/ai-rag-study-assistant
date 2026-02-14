@@ -27,14 +27,15 @@ class AskRequest(BaseModel):
     top_k: int | None = None
 
 
+@app.on_event("startup")
+def startup():
+    init_db()
+
+
 @app.get("/bedrock/status")
 def bedrock_status_endpoint():
     return bedrock_status()
 
-
-@app.on_event("startup")
-def startup():
-    init_db()
 
 
 @app.get("/health")
