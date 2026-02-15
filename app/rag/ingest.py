@@ -3,7 +3,7 @@ import uuid
 from dataclasses import dataclass
 from typing import List, Tuple
 
-from pgvector import Vector
+from pgvector.psycopg import Vector
 
 from .db import db_conn
 from .embeddings import embed_texts
