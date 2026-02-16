@@ -1,98 +1,103 @@
-﻿import os
+﻿# app/rag/db.py
+from __future__ import annotations
+
+import os
+import sqlite3
 from contextlib import contextmanager
 from typing import Iterator
 
-import psycopg
-from psycopg.rows import dict_row
-from pgvector.psycopg import register_vector
+DB_MODE = os.getenv("DB_MODE", "postgres").lower()
+SQLITE_PATH = os.getenv("SQLITE_PATH", "./data/app.db")
 
 
-def _env(name: str, default: str | None = None) -> str:
-    val = os.getenv(name, default)
-    if val is None:
-        raise RuntimeError(f"Missing required environment variable: {name}")
-    return val
-
-
-def db_conn() -> psycopg.Connection:
-    """
-    Create a psycopg (v3) connection and register pgvector type adapters.
-
-    Requires env vars:
-      DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD
-    """
-    conn = psycopg.connect(
-        host=_env("DB_HOST", "localhost"),
-        port=int(_env("DB_PORT", "5432")),
-        dbname=_env("DB_NAME", "ragdb"),
-        user=_env("DB_USER", "rag"),
-        password=_env("DB_PASSWORD", "rag"),
-        row_factory=dict_row,
-    )
-    # This makes Python lists/pgvector types work cleanly with psycopg parameters
-    register_vector(conn)
-    return conn
+def _ensure_sqlite_dir():
+    d = os.path.dirname(SQLITE_PATH)
+    if d:
+        os.makedirs(d, exist_ok=True)
 
 
 @contextmanager
-def get_cursor() -> Iterator[psycopg.Cursor]:
-    """
-    Convenience context manager if you want it elsewhere.
-    """
-    conn = db_conn()
+def sqlite_conn() -> Iterator[sqlite3.Connection]:
+    _ensure_sqlite_dir()
+    conn = sqlite3.connect(SQLITE_PATH)
     try:
-        with conn.cursor() as cur:
-            yield cur
+        conn.execute("PRAGMA journal_mode=WAL;")
+        conn.execute("PRAGMA synchronous=NORMAL;")
+        conn.row_factory = sqlite3.Row
+        yield conn
         conn.commit()
-    except Exception:
-        conn.rollback()
-        raise
+    finally:
+        conn.close()
+
+
+@contextmanager
+def db_conn():
+    """
+    Backwards-compatible connection factory.
+
+    - If DB_MODE=sqlite -> yields sqlite3.Connection
+    - Else -> yields psycopg.Connection (Postgres)
+    """
+    if DB_MODE == "sqlite":
+        with sqlite_conn() as conn:
+            yield conn
+        return
+
+    # Postgres mode (local/dev or if you later add Render Postgres)
+    import psycopg
+
+    url = os.getenv("DATABASE_URL")
+    if url:
+        conn = psycopg.connect(url)
+    else:
+        conn = psycopg.connect(
+            host=os.getenv("PGHOST", "127.0.0.1"),
+            port=int(os.getenv("PGPORT", "5432")),
+            dbname=os.getenv("PGDATABASE", "rag"),
+            user=os.getenv("PGUSER", "postgres"),
+            password=os.getenv("PGPASSWORD", "postgres"),
+        )
+
+    try:
+        yield conn
+        conn.commit()
     finally:
         conn.close()
 
 
 def init_db() -> None:
     """
-    Initialize schema (documents + chunks) and ensure pgvector extension exists.
+    Initializes the database schema depending on DB_MODE.
     """
-    with db_conn() as conn, conn.cursor() as cur:
-        cur.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+    if DB_MODE == "sqlite":
+        with sqlite_conn() as conn:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS documents (
+                    id TEXT PRIMARY KEY,
+                    title TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    created_at TEXT DEFAULT (datetime('now'))
+                );
 
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS documents (
-              id TEXT PRIMARY KEY,
-              title TEXT NOT NULL,
-              source TEXT NOT NULL,
-              created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-            );
-            """
-        )
+                CREATE TABLE IF NOT EXISTS chunks (
+                    id TEXT PRIMARY KEY,
+                    doc_id TEXT NOT NULL,
+                    chunk_index INTEGER NOT NULL,
+                    content TEXT NOT NULL,
+                    token_count INTEGER NULL,
+                    embedding BLOB NOT NULL,      -- float32 bytes
+                    embedding_dim INTEGER NOT NULL,
+                    created_at TEXT DEFAULT (datetime('now')),
+                    FOREIGN KEY(doc_id) REFERENCES documents(id)
+                );
 
-        # NOTE: embedding dimension defaults to 1024 (Titan embed v2).
-        # If you change embedding model, update this env var (EMBED_DIM).
-        embed_dim = int(os.getenv("EMBED_DIM", "1024"))
+                CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
+                """
+            )
+        return
 
-        cur.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS chunks (
-              id TEXT PRIMARY KEY,
-              doc_id TEXT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
-              chunk_index INT NOT NULL,
-              content TEXT NOT NULL,
-              token_count INT NULL,
-              embedding vector({embed_dim}) NOT NULL
-            );
-            """
-        )
+    # Postgres schema init (minimal; assumes you already created tables locally)
+    # If you want, we can add full CREATE EXTENSION vector + CREATE TABLE here later.
+    return
 
-        # Optional index (fine to keep for now; pgvector warns when table is tiny)
-        cur.execute(
-            """
-            CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
-            """
-        )
-
-        # If you already have an ivfflat index in your compose/init, keep it.
-        # If not, you can add later once you have more chunks.
-        conn.commit()
