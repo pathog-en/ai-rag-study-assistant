@@ -10,7 +10,6 @@ from rag.prompt import build_prompt
 from rag.chat import generate_answer
 from rag.bedrock_status import bedrock_status
 
-
 load_dotenv()
 
 app = FastAPI(title=os.getenv("APP_NAME", "ai-rag-study-assistant"))
@@ -27,15 +26,28 @@ class AskRequest(BaseModel):
     top_k: int | None = None
 
 
+class ChatRequest(BaseModel):
+    q: str
+    top_k: int = 4
+
+
 @app.on_event("startup")
 def startup():
     init_db()
 
 
+@app.get("/debug/which-app")
+def which_app():
+    return {"app_name": app.title, "file": __file__}
+
+
 @app.get("/bedrock/status")
 def bedrock_status_endpoint():
+    """
+    Single source of truth: uses rag.bedrock_status.bedrock_status()
+    (You previously had TWO /bedrock/status endpoints; FastAPI overrides duplicates.)
+    """
     return bedrock_status()
-
 
 
 @app.get("/health")
@@ -47,7 +59,6 @@ def health():
 def debug_retrieve(q: str = "RAG vs fine-tuning"):
     hits = retrieve(q, top_k=10)
     return {"q": q, "hits_count": len(hits), "hits_preview": hits[:2]}
-
 
 
 @app.post("/ingest")
@@ -67,37 +78,67 @@ def ask(req: AskRequest):
 
     hits = retrieve(q, top_k=req.top_k)
 
-    # Guardrail: if retrieval returns nothing, do not generate
+    # Guardrail: if retrieval returns nothing, d
+
+
+class ChatRequest(BaseModel):
+    q: str
+    top_k: int = 4
+
+
+@app.post("/chat")
+def chat(req: ChatRequest):
+    q = req.q.strip()
+    if not q:
+        raise HTTPException(status_code=400, detail="q is empty")
+
+    hits = retrieve(q, top_k=req.top_k)
+
     if not hits:
         return {
+            "q": q,
             "answer": "Not found in knowledge base.",
             "grounded": False,
-            "top_score": None,
-            "sources": [],
+            "citations": [],
+            "hits_count": 0,
         }
 
-    top_score = float(hits[0].get("score", 0.0))
+    citations = []
+    context_blocks = []
+    for i, h in enumerate(hits, start=1):
+        citations.append(
+            {
+                "n": i,
+                "doc_title": h.get("doc_title"),
+                "doc_source": h.get("doc_source"),
+                "chunk_index": h.get("chunk_index"),
+                "chunk_id": h.get("chunk_id"),
+                "score": float(h.get("score", 0.0)),
+            }
+        )
+        content = (h.get("content") or "").strip()
+        context_blocks.append(
+            f"[{i}] doc_title={h.get('doc_title')} | source={h.get('doc_source')} | chunk_id={h.get('chunk_id')}\n"
+            f"{content}"
+        )
 
-    prompt = build_prompt(q, hits)
+    system = (
+        "You are a study assistant for AWS certifications.\n"
+        "Rules:\n"
+        "- Use ONLY the provided Context to answer.\n"
+        "- If the Context does not contain enough information, say so and ask a follow-up.\n"
+        "- Cite sources inline like [1], [2] based on the Context items.\n"
+        "- Do NOT invent facts or sources.\n"
+    )
+
+    prompt = f"{system}\n\nQuestion:\n{q}\n\nContext:\n" + "\n\n".join(context_blocks)
     answer = generate_answer(prompt)
 
-    sources = [
-        {
-            "doc_title": h["doc_title"],
-            "doc_source": h["doc_source"],
-            "chunk_index": h["chunk_index"],
-            "score": float(h["score"]),
-            "chunk_id": h["chunk_id"],
-        }
-        for h in hits
-    ]
-
     return {
+        "q": q,
         "answer": answer,
-        "grounded": True,
-        "top_score": top_score,
-        "sources": sources,
+        "grounded": False,
+        "citations": citations,
+        "hits_count": len(hits),
     }
 
-
-    return {"answer": answer, "sources": sources}
