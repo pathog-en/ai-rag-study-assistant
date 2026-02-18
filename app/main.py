@@ -41,6 +41,27 @@ def which_app():
     return {"app_name": app.title, "file": __file__}
 
 
+@app.get("/debug/env")
+def debug_env():
+    import os
+    keys = [
+        "DB_MODE",
+        "SQLITE_PATH",
+        "AWS_REGION",
+        "AWS_ACCESS_KEY_ID",
+        "BEDROCK_MODEL_ID",
+        "USE_BEDROCK",
+    ]
+    out = {}
+    for k in keys:
+        v = os.getenv(k)
+        if k == "AWS_ACCESS_KEY_ID" and v:
+            out[k] = v[:4] + "..." + v[-4:]  # mask
+        else:
+            out[k] = v
+    return out
+
+
 @app.get("/bedrock/status")
 def bedrock_status_endpoint():
     """
