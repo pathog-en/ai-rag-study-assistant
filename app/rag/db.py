@@ -6,7 +6,9 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Iterator
 
-DB_MODE = os.getenv("DB_MODE", "postgres").lower()
+def get_db_mode() -> str:
+    import os
+    return os.getenv("DB_MODE", "postgres").lower()
 SQLITE_PATH = os.getenv("SQLITE_PATH", "./data/app.db")
 
 
@@ -38,7 +40,7 @@ def db_conn():
     - If DB_MODE=sqlite -> yields sqlite3.Connection
     - Else -> yields psycopg.Connection (Postgres)
     """
-    if DB_MODE == "sqlite":
+    if get_db_mode() == "sqlite":
         with sqlite_conn() as conn:
             yield conn
         return
