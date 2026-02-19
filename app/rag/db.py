@@ -6,9 +6,11 @@ import sqlite3
 from contextlib import contextmanager
 from typing import Iterator
 
+
 def get_db_mode() -> str:
-    import os
-    return os.getenv("DB_MODE", "postgres").lower()
+    return os.getenv("DB_MODE", "sqlite").lower()
+
+
 SQLITE_PATH = os.getenv("SQLITE_PATH", "./data/app.db")
 
 
@@ -45,7 +47,6 @@ def db_conn():
             yield conn
         return
 
-    # Postgres mode (local/dev or if you later add Render Postgres)
     import psycopg
 
     url = os.getenv("DATABASE_URL")
@@ -67,39 +68,79 @@ def db_conn():
         conn.close()
 
 
+def _sqlite_column_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
+    rows = conn.execute(f"PRAGMA table_info({table});").fetchall()
+    return any(r["name"] == col for r in rows)
+
+
 def init_db() -> None:
     """
-    Initializes the database schema depending on DB_MODE.
+    Initializes schema depending on DB_MODE.
+
+    For SQLite, we also do a lightweight migration:
+    - ensure users table exists
+    - ensure documents/chunks have user_id + notebook columns
     """
-    if DB_MODE == "sqlite":
-        with sqlite_conn() as conn:
-            conn.executescript(
-                """
-                CREATE TABLE IF NOT EXISTS documents (
-                    id TEXT PRIMARY KEY,
-                    title TEXT NOT NULL,
-                    source TEXT NOT NULL,
-                    created_at TEXT DEFAULT (datetime('now'))
-                );
-
-                CREATE TABLE IF NOT EXISTS chunks (
-                    id TEXT PRIMARY KEY,
-                    doc_id TEXT NOT NULL,
-                    chunk_index INTEGER NOT NULL,
-                    content TEXT NOT NULL,
-                    token_count INTEGER NULL,
-                    embedding BLOB NOT NULL,      -- float32 bytes
-                    embedding_dim INTEGER NOT NULL,
-                    created_at TEXT DEFAULT (datetime('now')),
-                    FOREIGN KEY(doc_id) REFERENCES documents(id)
-                );
-
-                CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
-                """
-            )
+    if get_db_mode() != "sqlite":
+        # Postgres init not implemented in this MVP.
         return
 
-    # Postgres schema init (minimal; assumes you already created tables locally)
-    # If you want, we can add full CREATE EXTENSION vector + CREATE TABLE here later.
-    return
+    with sqlite_conn() as conn:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS users (
+                id TEXT PRIMARY KEY,
+                api_key_hash TEXT NOT NULL UNIQUE,
+                label TEXT NULL,
+                created_at TEXT DEFAULT (datetime('now'))
+            );
 
+            CREATE TABLE IF NOT EXISTS documents (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                notebook TEXT NOT NULL,
+                title TEXT NOT NULL,
+                source TEXT NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
+
+            CREATE TABLE IF NOT EXISTS chunks (
+                id TEXT PRIMARY KEY,
+                user_id TEXT NOT NULL,
+                doc_id TEXT NOT NULL,
+                notebook TEXT NOT NULL,
+                chunk_index INTEGER NOT NULL,
+                content TEXT NOT NULL,
+                token_count INTEGER NULL,
+                embedding BLOB NOT NULL,      -- float32 bytes
+                embedding_dim INTEGER NOT NULL,
+                created_at TEXT DEFAULT (datetime('now')),
+                FOREIGN KEY(doc_id) REFERENCES documents(id),
+                FOREIGN KEY(user_id) REFERENCES users(id)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_documents_user_notebook ON documents(user_id, notebook);
+            CREATE INDEX IF NOT EXISTS idx_chunks_user_notebook ON chunks(user_id, notebook);
+            CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
+            """
+        )
+
+        # If you have older SQLite DB files created before multi-tenant, migrate.
+        # We only try ALTERs if the old tables exist and columns are missing.
+        for table, col, ddl in [
+            ("documents", "user_id", "ALTER TABLE documents ADD COLUMN user_id TEXT;"),
+            ("documents", "notebook", "ALTER TABLE documents ADD COLUMN notebook TEXT;"),
+            ("chunks", "user_id", "ALTER TABLE chunks ADD COLUMN user_id TEXT;"),
+            ("chunks", "notebook", "ALTER TABLE chunks ADD COLUMN notebook TEXT;"),
+        ]:
+            try:
+                if conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?;",
+                    (table,),
+                ).fetchone():
+                    if not _sqlite_column_exists(conn, table, col):
+                        conn.execute(ddl)
+            except Exception:
+                # Safe ignore: migrations are best-effort for dev DBs.
+                pass
