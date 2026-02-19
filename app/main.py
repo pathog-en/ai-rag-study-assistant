@@ -1,5 +1,5 @@
 import os
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -14,7 +14,7 @@ load_dotenv()
 app = FastAPI(title=os.getenv("APP_NAME", "ai-rag-study-assistant"))
 
 
-# ----------- Request models (v1 public API) -----------
+# ----------- Models -----------
 
 class V1IngestRequest(BaseModel):
     title: str
@@ -27,6 +27,10 @@ class V1ChatRequest(BaseModel):
     q: str
     top_k: int = 4
     notebook: str | None = "default"
+
+
+class AdminCreateUserRequest(BaseModel):
+    label: str | None = None
 
 
 # ----------- Startup -----------
@@ -50,10 +54,6 @@ def which_app():
 
 @app.get("/debug/env")
 def debug_env():
-    """
-    Safe-ish environment visibility to debug Render config.
-    Masks AWS access key (if present). Does NOT expose secrets.
-    """
     keys = [
         "DB_MODE",
         "SQLITE_PATH",
@@ -73,42 +73,10 @@ def debug_env():
     return out
 
 
-# ----------- Admin: create user keys -----------
-
-class AdminCreateUserRequest(BaseModel):
-    notebook: str | None = "default"
-    label: str | None = None
-
+# ----------- Admin -----------
 
 @app.post("/admin/create_user_key")
-def admin_create_user_key(req: AdminCreateUserRequest):
-    """
-    Creates a new user and returns an API key ONCE.
-
-    Call with header:
-      X-Admin-Key: <ADMIN_API_KEY>
-
-    (We keep this intentionally simple: you mint keys and hand them to testers.)
-    """
-    admin_expected = os.getenv("ADMIN_API_KEY")
-    if not admin_expected:
-        raise HTTPException(status_code=500, detail="ADMIN_API_KEY not configured")
-
-    # FastAPI doesn't inject headers here by default; read from env-protected expectation.
-    # Use a dependency-style pattern if you prefer, but this is fine for MVP.
-    from fastapi import Request
-    from fastapi import Body
-
-    # NOTE: We can't type-inject Request without adding it to signature; do a minimal workaround:
-    # We'll use a tiny hack: FastAPI provides request via context, but easiest is just add Request param.
-    # So we re-define properly below (see admin_create_user_key2).
-    raise HTTPException(status_code=500, detail="Use /admin/create_user_key2 endpoint (fixed header handling).")
-
-
-from fastapi import Header, Request
-
-@app.post("/admin/create_user_key2")
-def admin_create_user_key2(
+def admin_create_user_key(
     req: AdminCreateUserRequest,
     x_admin_key: str | None = Header(default=None, alias="X-Admin-Key"),
 ):
@@ -123,13 +91,12 @@ def admin_create_user_key2(
 
     return {
         "user_id": user_id,
-        "api_key": api_key,          # show once, store it securely
-        "default_notebook": req.notebook or "default",
+        "api_key": api_key,  # shown once
         "note": "Send this api_key to the user. They must pass it as X-API-Key on /v1/* endpoints.",
     }
 
 
-# ----------- v1 Public API (multi-tenant) -----------
+# ----------- v1 Public API -----------
 
 @app.get("/v1/me")
 def v1_me(user: UserContext = Depends(require_user)):
@@ -143,17 +110,14 @@ def v1_ingest(req: V1IngestRequest, user: UserContext = Depends(require_user)):
 
     nb = (req.notebook or "default").strip() or "default"
 
-    try:
-        doc_id, chunk_count = ingest_markdown(
-            user_id=user.user_id,
-            notebook=nb,
-            title=req.title,
-            source=req.source,
-            markdown=req.markdown,
-        )
-        return {"doc_id": doc_id, "chunks_added": chunk_count, "notebook": nb}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"ingest failed: {type(e).__name__}: {e}")
+    doc_id, chunk_count = ingest_markdown(
+        user_id=user.user_id,
+        notebook=nb,
+        title=req.title,
+        source=req.source,
+        markdown=req.markdown,
+    )
+    return {"doc_id": doc_id, "chunks_added": chunk_count, "notebook": nb}
 
 
 @app.post("/v1/chat")
@@ -164,10 +128,7 @@ def v1_chat(req: V1ChatRequest, user: UserContext = Depends(require_user)):
 
     nb = (req.notebook or "default").strip() or "default"
 
-    try:
-        hits = retrieve(user_id=user.user_id, notebook=nb, query=q, top_k=req.top_k)
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"retrieve failed: {type(e).__name__}: {e}")
+    hits = retrieve(user_id=user.user_id, notebook=nb, query=q, top_k=req.top_k)
 
     if not hits:
         return {"q": q, "answer": "Not found in knowledge base.", "grounded": False, "citations": [], "hits_count": 0}
@@ -212,4 +173,5 @@ def v1_chat(req: V1ChatRequest, user: UserContext = Depends(require_user)):
         "hits_count": len(hits),
         "notebook": nb,
     }
+
 
