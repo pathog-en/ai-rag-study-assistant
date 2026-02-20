@@ -49,7 +49,11 @@ def health():
 
 @app.get("/debug/which-app")
 def which_app():
-    return {"app_name": app.title, "file": __file__}
+    return {
+        "app_name": app.title,
+        "file": _file_,
+        ""render_git_commit": os.getenv("RENDER_GIT_COMMIT", None),
+        }
 
 
 @app.get("/debug/env")
