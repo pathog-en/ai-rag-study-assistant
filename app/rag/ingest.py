@@ -5,9 +5,8 @@ from dataclasses import dataclass
 from typing import List, Tuple
 
 import numpy as np
-from pgvector.psycopg import Vector
 
-from .db import DB_MODE, db_conn, sqlite_conn
+from .db import get_db_mode, sqlite_conn
 from .embeddings import embed_texts
 
 
@@ -18,10 +17,6 @@ class Chunk:
 
 
 def chunk_text(text: str, chunk_size: int, overlap: int) -> List[Chunk]:
-    """
-    Simple character-based chunking (MVP).
-    Keeps overlap to preserve context across chunk boundaries.
-    """
     text = text.strip()
     if not text:
         return []
@@ -48,18 +43,17 @@ def _emb_to_blob(vec) -> tuple[bytes, int]:
     return a.tobytes(), int(a.shape[0])
 
 
-def ingest_markdown(title: str, source: str, markdown: str) -> Tuple[str, int]:
+def ingest_markdown(
+    *,
+    user_id: str,
+    notebook: str,
+    title: str,
+    source: str,
+    markdown: str
+) -> Tuple[str, int]:
     """
-    Ingest markdown text into:
-      - documents table (metadata)
-      - chunks table (chunk text + embedding)
-
-    SQLite mode:
-      - embedding stored as float32 BLOB + embedding_dim
-    Postgres mode:
-      - embedding stored as pgvector
-
-    Returns: (doc_id, chunks_added)
+    Multi-tenant ingest:
+      - scoped to (user_id, notebook)
     """
     chunk_size = int(os.getenv("CHUNK_SIZE", "900"))
     overlap = int(os.getenv("CHUNK_OVERLAP", "150"))
@@ -72,11 +66,14 @@ def ingest_markdown(title: str, source: str, markdown: str) -> Tuple[str, int]:
 
     embeddings = embed_texts([c.content for c in chunks])
 
-    if DB_MODE == "sqlite":
+    if get_db_mode() == "sqlite":
         with sqlite_conn() as conn:
             conn.execute(
-                "INSERT INTO documents (id, title, source) VALUES (?, ?, ?)",
-                (doc_id, title, source),
+                """
+                INSERT INTO documents (id, user_id, notebook, title, source)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (doc_id, user_id, notebook, title, source),
             )
 
             for c, emb in zip(chunks, embeddings):
@@ -84,30 +81,14 @@ def ingest_markdown(title: str, source: str, markdown: str) -> Tuple[str, int]:
                 blob, dim = _emb_to_blob(emb)
                 conn.execute(
                     """
-                    INSERT INTO chunks (id, doc_id, chunk_index, content, token_count, embedding, embedding_dim)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO chunks (
+                        id, user_id, doc_id, notebook, chunk_index, content, token_count, embedding, embedding_dim
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (chunk_id, doc_id, c.chunk_index, c.content, None, blob, dim),
+                    (chunk_id, user_id, doc_id, notebook, c.chunk_index, c.content, None, blob, dim),
                 )
 
         return doc_id, len(chunks)
 
-    # Postgres / pgvector path (your original logic)
-    with db_conn() as conn, conn.cursor() as cur:
-        cur.execute(
-            "INSERT INTO documents (id, title, source) VALUES (%s, %s, %s)",
-            (doc_id, title, source),
-        )
-
-        for c, emb in zip(chunks, embeddings):
-            chunk_id = str(uuid.uuid4())
-            cur.execute(
-                """
-                INSERT INTO chunks (id, doc_id, chunk_index, content, token_count, embedding)
-                VALUES (%s, %s, %s, %s, %s, %s)
-                """,
-                (chunk_id, doc_id, c.chunk_index, c.content, None, Vector(emb)),
-            )
-
-    return doc_id, len(chunks)
-
+    raise RuntimeError("Postgres mode is not supported for multi-tenant ingest in this MVP")
