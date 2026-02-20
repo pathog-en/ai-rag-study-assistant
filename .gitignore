@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+
+# Local DB / data
+app/data/
+*.db
+
+# Virtualenv
+.venv/
+venv/
