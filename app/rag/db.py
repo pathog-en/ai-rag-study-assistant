@@ -1,4 +1,5 @@
-﻿# app/rag/db.py
+﻿
+# app/rag/db.py
 from __future__ import annotations
 
 import os
@@ -68,24 +69,30 @@ def db_conn():
         conn.close()
 
 
-def _sqlite_column_exists(conn: sqlite3.Connection, table: str, col: str) -> bool:
+def _sqlite_column_exists(
+    conn: sqlite3.Connection, table: str, col: str
+) -> bool:
     rows = conn.execute(f"PRAGMA table_info({table});").fetchall()
     return any(r["name"] == col for r in rows)
 
 
 def init_db() -> None:
     """
-    Initializes schema depending on DB_MODE.
+    Initialize the database schema.
 
-    For SQLite, we also do a lightweight migration:
-    - ensure users table exists
-    - ensure documents/chunks have user_id + notebook columns
+    For SQLite:
+    1. Create tables if they don't exist.
+    2. Migrate older tables to add user_id and notebook.
+    3. Create indexes after required columns exist.
+
+    PostgreSQL initialization is not implemented in this MVP.
     """
     if get_db_mode() != "sqlite":
-        # Postgres init not implemented in this MVP.
         return
 
     with sqlite_conn() as conn:
+
+        # Step 1: Create tables if they do not exist.
         conn.executescript(
             """
             CREATE TABLE IF NOT EXISTS users (
@@ -113,34 +120,64 @@ def init_db() -> None:
                 chunk_index INTEGER NOT NULL,
                 content TEXT NOT NULL,
                 token_count INTEGER NULL,
-                embedding BLOB NOT NULL,      -- float32 bytes
+                embedding BLOB NOT NULL,
                 embedding_dim INTEGER NOT NULL,
                 created_at TEXT DEFAULT (datetime('now')),
                 FOREIGN KEY(doc_id) REFERENCES documents(id),
                 FOREIGN KEY(user_id) REFERENCES users(id)
             );
-
-            CREATE INDEX IF NOT EXISTS idx_documents_user_notebook ON documents(user_id, notebook);
-            CREATE INDEX IF NOT EXISTS idx_chunks_user_notebook ON chunks(user_id, notebook);
-            CREATE INDEX IF NOT EXISTS idx_chunks_doc_id ON chunks(doc_id);
             """
         )
 
-        # If you have older SQLite DB files created before multi-tenant, migrate.
-        # We only try ALTERs if the old tables exist and columns are missing.
-        for table, col, ddl in [
-            ("documents", "user_id", "ALTER TABLE documents ADD COLUMN user_id TEXT;"),
-            ("documents", "notebook", "ALTER TABLE documents ADD COLUMN notebook TEXT;"),
-            ("chunks", "user_id", "ALTER TABLE chunks ADD COLUMN user_id TEXT;"),
-            ("chunks", "notebook", "ALTER TABLE chunks ADD COLUMN notebook TEXT;"),
-        ]:
-            try:
-                if conn.execute(
-                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?;",
-                    (table,),
-                ).fetchone():
-                    if not _sqlite_column_exists(conn, table, col):
-                        conn.execute(ddl)
-            except Exception:
-                # Safe ignore: migrations are best-effort for dev DBs.
-                pass
+        # Step 2: Migrate older SQLite tables.
+        migrations = [
+            (
+                "documents",
+                "user_id",
+                "ALTER TABLE documents ADD COLUMN user_id TEXT;",
+            ),
+            (
+                "documents",
+                "notebook",
+                "ALTER TABLE documents ADD COLUMN notebook TEXT;",
+            ),
+            (
+                "chunks",
+                "user_id",
+                "ALTER TABLE chunks ADD COLUMN user_id TEXT;",
+            ),
+            (
+                "chunks",
+                "notebook",
+                "ALTER TABLE chunks ADD COLUMN notebook TEXT;",
+            ),
+        ]
+
+        for table, column, ddl in migrations:
+            table_exists = conn.execute(
+                """
+                SELECT name
+                FROM sqlite_master
+                WHERE type='table' AND name=?;
+                """,
+                (table,),
+            ).fetchone()
+
+            if table_exists and not _sqlite_column_exists(
+                conn, table, column
+            ):
+                conn.execute(ddl)
+
+        # Step 3: Create indexes after migration.
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_documents_user_notebook
+            ON documents(user_id, notebook);
+
+            CREATE INDEX IF NOT EXISTS idx_chunks_user_notebook
+            ON chunks(user_id, notebook);
+
+            CREATE INDEX IF NOT EXISTS idx_chunks_doc_id
+            ON chunks(doc_id);
+            """
+        )

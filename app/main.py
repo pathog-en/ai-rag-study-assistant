@@ -51,8 +51,8 @@ def health():
 def which_app():
     return {
         "app_name": app.title,
-        "file": _file_,
-        ""render_git_commit": os.getenv("RENDER_GIT_COMMIT", None),
+        "file": __file__,
+        "render_git_commit": os.getenv("RENDER_GIT_COMMIT", None),
         }
 
 
