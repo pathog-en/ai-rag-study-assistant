@@ -9,3 +9,5 @@ app/data/
 # Virtualenv
 .venv/
 venv/
+
+/app/.env
