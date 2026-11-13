@@ -3,12 +3,15 @@ import json
 import boto3
 from botocore.exceptions import BotoCoreError, ClientError
 
-def generate_answer(prompt: str) -> str:
+def generate_answer(prompt: str, system_prompt: str | None = None) -> str:
     if os.getenv("USE_BEDROCK", "true").lower() not in ("1", "true", "yes"):
         return "Bedrock disabled (USE_BEDROCK=false)."
 
     region = os.getenv("AWS_REGION", "us-east-1")
-    model_id = os.getenv("BEDROCK_MODEL_ID", "anthropic.claude-3-haiku-20240307-v1:0")
+    model_id = os.getenv(
+        "BEDROCK_MODEL_ID",
+        "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+    )
 
     try:
         client = boto3.client("bedrock-runtime", region_name=region)
@@ -21,6 +24,8 @@ def generate_answer(prompt: str) -> str:
                 {"role": "user", "content": [{"type": "text", "text": prompt}]}
             ],
         }
+        if system_prompt:
+            body["system"] = system_prompt
 
         resp = client.invoke_model(
             modelId=model_id,
