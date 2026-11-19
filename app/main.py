@@ -3,6 +3,7 @@ from fastapi import FastAPI, HTTPException, Depends, Header
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
+from rag.agent_workflow import workflow
 from rag.db import init_db
 from rag.ingest import ingest_markdown
 from rag.retrieve import retrieve
@@ -105,6 +106,30 @@ def admin_create_user_key(
 @app.get("/v1/me")
 def v1_me(user: UserContext = Depends(require_user)):
     return {"user_id": user.user_id, "label": user.label}
+
+
+@app.post("/v1/agent/retrieve")
+def v1_agent_retrieve(
+    req: V1ChatRequest,
+    user: UserContext = Depends(require_user)
+):
+    nb = (req.notebook or "default").strip() or "default"
+
+    result = workflow.invoke(
+        {
+            "question": req.q,
+            "notebook": nb,
+            "status": "pending",
+            "hits_count": 0
+        },
+        context={"user_id": user.user_id}
+    )
+
+    return {
+        "status": result["status"],
+        "hits_count": result["hits_count"],
+        "notebook": nb
+    }
 
 
 @app.post("/v1/ingest")
